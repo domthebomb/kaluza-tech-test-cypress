@@ -8,6 +8,7 @@
     "pretest": "rm -rf cypress/screenshots cypress/videos",
     "test": "cypress run",
     "tag:smoke": "cypress run --env tags='@smoke'",
+    "tag:regresssion": "cypress run --env tags='@regresssion'",
     "lint:eslint": "eslint .",
     "lint:tsc": "tsc --noEmit",
     "lint": "npm run lint:eslint; npm run lint:tsc",

@@ -2,7 +2,6 @@ import {Given, When, Then} from '@badeball/cypress-cucumber-preprocessor';
 import {Journey, Leg} from '../../../../types/journeyTypes';
 
 
-//todo i would break these into there own folders/files but i wont be doing this yet ill do it when i have completed all scenarios...
 /**
  * captureRequestTime creates a new date object and
  * assigns that value to the Cypress environment variable `requestTime`,
@@ -14,8 +13,28 @@ const captureRequestTime = () => {
 };
 
 /**
+ * Calculates the date of the next Wednesday from the current date and returns it in the format 'YYYYMMDD'.
+ *
+ * @returns {string} The date of the next Wednesday in the format 'YYYYMMDD'.
+ */
+function getNextWednesday(): string {
+    const now = new Date();
+    const nextWednesday = new Date(now.getTime());
+
+    // Set the date to the next Wednesday
+    nextWednesday.setDate(now.getDate() + ((3 + 7 - now.getDay()) % 7));
+
+    // Format the date as 'YYYYMMDD'
+    const year = nextWednesday.getFullYear();
+    const month = ('0' + (nextWednesday.getMonth() + 1)).slice(-2); // Months are 0-based in JavaScript
+    const day = ('0' + nextWednesday.getDate()).slice(-2);
+
+    return `${year}${month}${day}`;
+}
+
+/**
  * planJourney gets the desired start and end locations from the Cypress
- * environment variables and constructs a url using these locations.
+ * environment variables and constructs a url using these locations and the params object.
  * Then runs a GET request to that url.
  *
  * @returns a promise containing the result of a Cypress HTTP GET
@@ -24,6 +43,8 @@ const captureRequestTime = () => {
 const planJourney = () => {
     const travelFromLocation = Cypress.env("travelFromLocation");
     const travelToLocation = Cypress.env("travelToLocation");
+    const params = Cypress.env("params");
+
 
     captureRequestTime();
 
@@ -32,22 +53,39 @@ const planJourney = () => {
     return cy.request(journeyUrl);
 }
 
+type Params = {
+    date?: string;
+    time?: string;
+    timels?: string;
+    journeyPreference?: string;
+};
+
 /**
- * constructJourneyUrl constructs a url using given parameters.
+ * Constructs a URL for the TfL API's JourneyResults endpoint.
  *
  * @param {string} from - The starting location of the journey.
  * @param {string} to - The ending location of the journey.
- * @param {string} [preference] - The travel preference, optional.
- * @returns a string representing the complete url.
+ * @param {Params} params - An object containing additional parameters for the journey.
+ * @returns {string} The constructed URL.
  */
-const constructJourneyUrl = (from: string, to: string, preference?: string) => {
+const constructJourneyUrl = (from: string, to: string, params?: Params) => {
     let url = `https://api.tfl.gov.uk/Journey/JourneyResults/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`;
-    if (preference && preference.trim() !== "") {
-        url += `?journeyPreference=${encodeURIComponent(preference)}`;
-        Cypress.env("journeyPreference", preference);
-    } else {
-        Cypress.env("journeyPreference", null);
+
+    if (params) {
+        const paramEntries = Object.entries(params);
+        if (paramEntries.length > 0) {
+            url += '?';
+            paramEntries.forEach(([key, value], index) => {
+                if (value) {
+                    url += `${encodeURIComponent(key)}=${encodeURIComponent(value.toString())}`;
+                    if (index < paramEntries.length - 1) {
+                        url += '&';
+                    }
+                }
+            });
+        }
     }
+
     return url;
 };
 
@@ -99,12 +137,11 @@ const processJourneyResponse = (response) => {
  * @returns a promise containing the result of a Cypress HTTP GET
  * request to the TfL API's journey results endpoint.
  */
-const makeFinalJourneyRequest = (bestFromCommonName, bestToCommonName) => {
-    let finalJourneyUrl = `https://api.tfl.gov.uk/Journey/JourneyResults/${encodeURIComponent(bestFromCommonName)}/to/${encodeURIComponent(bestToCommonName)}`;
-    const journeyPreference = Cypress.env("journeyPreference");
-    if (journeyPreference) {
-        finalJourneyUrl += `?journeyPreference=${encodeURIComponent(journeyPreference)}`;
-    }
+const makeFinalJourneyRequest = (bestFromCommonName: string, bestToCommonName: string) => {
+    const params: Params = Cypress.env("params");
+
+    let finalJourneyUrl = constructJourneyUrl(bestFromCommonName, bestToCommonName, params);
+
     return cy.request(finalJourneyUrl).then((response) => {
         expect(response.status).to.eq(200);
         Cypress.env('journeyResponse', response);
@@ -146,7 +183,34 @@ When('I plan my journey', () => {
 });
 
 
-When('I plan my journey with preference {string}', (journeyPreference: string) => {
+type JourneyPreference = {
+    time: string;
+    timels: string;
+};
+
+When('I plan my journey with parameters', (dataTable: { raw: () => any; }) => {
+    const data = dataTable.raw();
+    const params: Params = {};
+
+    // Skip the first row (headers)
+    for (let i = 1; i < data.length; i++) {
+        const key = data[i][0];
+        let value = data[i][1];
+
+        if (key === 'date' && value.toLowerCase() === 'next wednesday') {
+            value = getNextWednesday();
+        }
+
+        if (key === 'time') {
+            params[key] = value.replace(':', '').trim();
+        } else {
+            params[key] = value.trim();
+        }
+    }
+
+    Cypress.env("params", params);
+
+
     planJourney().then((response) => {
         expect(response.status).to.eq(300);
         const travelFromLocation = Cypress.env("travelFromLocation");
@@ -154,7 +218,7 @@ When('I plan my journey with preference {string}', (journeyPreference: string) =
 
         captureRequestTime();
 
-        const journeyUrl = constructJourneyUrl(travelFromLocation, travelToLocation, journeyPreference);
+        const journeyUrl = constructJourneyUrl(travelFromLocation, travelToLocation, params);
 
         cy.request(journeyUrl).then((response) => {
             expect(response.status).to.eq(300);
@@ -232,4 +296,13 @@ Then('I should get a successful response', () => {
 
     // Log the final journey response
     console.log('Final Journey Response:', JSON.stringify(journeyResponse.body, null, 2));
+});
+
+Then('the match should be incorrect', () => {
+    cy.wrap(Cypress.env('bestFromCommonName')).then((bestFromCommonName) => {
+        const bestFromMatchCommonName = bestFromCommonName;
+
+        // Check if the matched address does not contain the expected keywords
+        expect(bestFromMatchCommonName).not.to.contain('Luton Airport');
+    });
 });
